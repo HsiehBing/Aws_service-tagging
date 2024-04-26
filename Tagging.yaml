@@ -1,0 +1,102 @@
+## Cronjob改為變數
+
+AWSTemplateFormatVersion: 2010-09-09
+# Parameter
+  KEYATHENA:
+    Type: String
+    Default: 'InputKey'  
+  KEYVALUE:
+    Type: String
+    Default: 'InputValue'
+
+# Lambda Execution Role
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TAG-LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy_tagging
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - athena:ListWorkGroups
+                  - athena:TagResource
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - lambda:InvokeFunction
+                Resource: "*"
+# Cronjob
+  EventRule:
+    Type: AWS::Events::Rule
+    DependsOn: LambdaFunction
+    Properties:
+      EventBusName: default
+      Name: MAP_tagging_EventBridge
+      ScheduleExpression: "cron(40 * * * ? *)"  
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: tjvk3hogyro980b9z678 
+    
+
+
+# Lambda Function Athena
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      FunctionName: MAP-S3LambdaFunction
+      Timeout: 900
+      Role: !GetAtt LambdaExecutionRole.Arn 
+      MemorySize: 512
+      Runtime: python3.10
+      Environment:
+        Variables:
+          KEY_S3: !Sub ${KeyS3}
+          VALUE_S3: !Sub ${ValueS3}
+
+      Code:
+        ZipFile: |
+          import boto3
+          def lambda_handler(event, context):
+            Athena_Key = 'key0426'
+            Athena_Value = 'value0830'
+
+            # get all regions
+            client_ec2 = boto3.client('ec2')
+            regions = [region['RegionName'] for region in client_ec2.describe_regions()['Regions']]
+
+            # get account id
+            client_sts = boto3.client('sts')
+            accountId = client_sts.get_caller_identity()['Account']
+
+            for region in regions: 
+                # Initialize Athena client
+                client_athena = boto3.client('athena', region)
+                # Get all Athena workgroups
+                response_Athena_WrokGroup = client_athena.list_work_groups()
+                for workgroup in response_Athena_WrokGroup['WorkGroups']:
+                    Workgroup_name = workgroup['Name']
+                    client_resourcegroup = boto3.client('resourcegroupstaggingapi',region)
+                    response = client_resourcegroup.tag_resources(ResourceARNList=[f'arn:aws:athena:{region}:{accountId}:workgroup/{Workgroup_name}'],Tags={Athena_Key: Athena_Value})
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'  
+    DeletionPolicy: Delete
+    Properties:
+      Action: 'lambda:InvokeFunction'  
+      FunctionName: !Ref LambdaFunction  
+      Principal: 'events.amazonaws.com'  
+      SourceArn: !GetAtt EventRule.Arn  
+
